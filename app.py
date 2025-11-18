@@ -243,6 +243,7 @@ app = Dash(
     external_stylesheets=external_stylesheets,
     suppress_callback_exceptions=True,
 )
+server = app.server
 
 
 def navbar():
