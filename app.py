@@ -176,6 +176,33 @@ def get_cached_best_popularity(token: str, track_name: str, artist_name: str, ma
 
     return best
 
+def get_playlist_info(tok, playlist_id: str):
+    """
+    Récupère quelques infos rapides sur la playlist :
+    - nom
+    - propriétaire
+    - image
+    - nombre total de titres
+    """
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+    r = get(url, headers=get_auth_header(tok), verify=False)
+    r.raise_for_status()
+    data = r.json()
+
+    name = data.get("name", "Playlist inconnue")
+    owner = (data.get("owner") or {}).get("display_name", "Inconnu")
+    images = data.get("images") or []
+    image = images[0]["url"] if images else ""
+    total = (data.get("tracks") or {}).get("total", 0)
+
+    return {
+        "id": playlist_id,
+        "name": name,
+        "owner": owner,
+        "image": image,
+        "total": total,
+    }
+
 
 def build_df_from_tracks(tracks, token: str):
     rows = []
@@ -280,10 +307,29 @@ def overlay_style(visible=False):
 
 
 def pick_two_ids_from_df(df: pd.DataFrame):
+    """
+    Tire deux morceaux avec des popularités différentes.
+    Si la playlist n'a pas au moins 2 popularités distinctes,
+    on renvoie None.
+    """
     if df is None or len(df) < 2:
         return None
-    pair = df.sample(2, replace=False).reset_index(drop=True)
-    return {"left_id": pair.loc[0, "id"], "right_id": pair.loc[1, "id"]}
+
+    # On enlève les doublons de popularité : chaque ligne restante
+    # a une popularité unique.
+    df_unique = df.drop_duplicates(subset="popularity")
+
+    # S'il n'y a pas au moins 2 popularités distinctes,
+    # on ne peut pas faire de duel "différent vs différent".
+    if len(df_unique) < 2:
+        return None
+
+    pair = df_unique.sample(2, replace=False).reset_index(drop=True)
+    return {
+        "left_id": pair.loc[0, "id"],
+        "right_id": pair.loc[1, "id"],
+    }
+
 
 
 # ======================
@@ -380,19 +426,22 @@ def layout_home():
                                     top=True,
                                     style={
                                         "objectFit": "cover",
-                                        "height": "200px",
+                                        "height": "220px",   # légèrement plus grand
                                     },
                                 ),
                                 dbc.CardBody(
                                     html.H3(
                                         "Jeu 1 : Duel",
                                         className="card-title",
-                                        style={"textAlign": "center"},
+                                        style={
+                                            "textAlign": "center",
+                                            "color": SPOTIFY_LIGHT,  # même couleur que "Spotify Games"
+                                        },
                                     )
                                 ),
                             ],
                             style={
-                                "width": "260px",
+                                "width": "300px",                 # carré un peu plus grand
                                 "cursor": "pointer",
                                 "border": f"1px solid {SPOTIFY_GREEN}",
                                 "backgroundColor": "#121212",
@@ -410,19 +459,22 @@ def layout_home():
                                     top=True,
                                     style={
                                         "objectFit": "cover",
-                                        "height": "200px",
+                                        "height": "220px",  # légèrement plus grand
                                     },
                                 ),
                                 dbc.CardBody(
                                     html.H3(
                                         "Jeu 2 : Classement",
                                         className="card-title",
-                                        style={"textAlign": "center"},
+                                        style={
+                                            "textAlign": "center",
+                                            "color": SPOTIFY_LIGHT,  # même couleur que "Spotify Games"
+                                        },
                                     )
                                 ),
                             ],
                             style={
-                                "width": "260px",
+                                "width": "300px",                 # carré un peu plus grand
                                 "cursor": "pointer",
                                 "border": f"1px solid {SPOTIFY_GREEN}",
                                 "backgroundColor": "#121212",
@@ -442,6 +494,7 @@ def layout_home():
         ],
         style={"paddingTop": "40px", "paddingBottom": "40px"},
     )
+
 
 # --------- PAGE DUEL ----------
 def layout_duel():
@@ -807,6 +860,7 @@ app.layout = html.Div(
         dcc.Location(id="url", refresh=False),
         # stores globaux
         dcc.Store(id="df-store", data=None),
+        dcc.Store(id="playlist-info", data=None),
         dcc.Store(id="pair-store", data=None),
         dcc.Store(id="selection-store", data={"selected": None}),
         dcc.Store(
@@ -865,6 +919,15 @@ app.layout = html.Div(
             ],
         ),
         navbar(),
+        html.Div(
+            id="playlist-summary",
+            style={
+                "padding": "0 24px",
+                "marginTop": "8px",
+                "color": "#B3B3B3",
+                "fontSize": "13px",
+            },
+        ),
         dbc.Container(
             id="page-content",
             style={
@@ -946,58 +1009,60 @@ def nav(n_duel, n_rank):
 
 @app.callback(
     Output("df-store", "data"),
+    Output("playlist-info", "data"),
     Output("playlist-modal", "is_open"),
     Output("modal-error", "children"),
     Input("load-playlist", "n_clicks"),
     Input("use-default", "n_clicks"),
-    Input("change-playlist", "n_clicks"),
     Input("url", "pathname"),
     State("playlist-input", "value"),
     State("df-store", "data"),
 )
-def load_playlist(n_load, n_default, n_change, path, raw_value, df_data):
+def load_playlist(n_load, n_default, path, raw_value, df_data):
     trig = ctx.triggered_id
 
-    # 1) Changement de page : ouvrir la modale sur les pages de jeu
-    #    uniquement si aucune playlist n'est encore chargée.
+    # 1) Changement de page : ouvrir la modale uniquement sur les pages de jeu,
+    #    et seulement si aucune playlist n'est encore chargée.
     if trig == "url":
         if path in ("/duel", "/ranking") and not df_data:
-            return no_update, True, no_update
+            # On arrive sur un mode de jeu sans playlist -> ouvrir la modale
+            return no_update, no_update, True, no_update
         else:
-            return no_update, False, no_update
+            # Sur la home, ou bien une playlist existe déjà -> modale fermée
+            return no_update, no_update, False, no_update
 
-    # 2) Clic sur "Changer de playlist" dans la barre de nav :
-    #    on ouvre juste la modale, sans toucher au df-store.
-    if trig == "change-playlist":
-        # Optionnel : vider le champ et le message d'erreur
-        # return no_update, True, ""
-        return no_update, True, no_update
-
-    # 3) Clic sur "Utiliser Top 50 : France"
+    # 2) Clic sur "Utiliser Top 50 : France"
     if trig == "use-default":
         playlist_id = DEFAULT_PLAYLIST_ID
 
-    # 4) Clic sur "Charger" avec une valeur saisie
+    # 3) Clic sur "Charger" avec une valeur saisie
     elif trig == "load-playlist":
         playlist_id = parse_playlist_id(raw_value or "")
         if not playlist_id:
             return (
                 no_update,
+                no_update,
                 True,
                 "Veuillez entrer un ID ou une URL de playlist valide.",
             )
 
-    # 5) Autre chose (ne devrait pas arriver)
+    # 4) Autre chose (ne devrait pas arriver)
     else:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     # --- Chargement réel de la playlist ---
     try:
         token = get_token()
         tracks = get_tracks_from_playlist(token, playlist_id)
         df = build_df_from_tracks(tracks, token)
+
+        # 👉 Récup des infos playlist
+        info = get_playlist_info(token, playlist_id)
+        info["loaded_count"] = len(tracks)  # nb de titres chargés pour le jeu
+
     except Exception:
         return (
+            no_update,
             no_update,
             True,
             "Impossible de charger la playlist (ID invalide ou inaccessible).",
@@ -1006,12 +1071,78 @@ def load_playlist(n_load, n_default, n_change, path, raw_value, df_data):
     if df is None or df.empty or len(df) < 2:
         return (
             no_update,
+            no_update,
             True,
             "Playlist vide/inaccessible ou contenant moins de 2 titres.",
         )
 
-    # Succès : on stocke le df + on ferme la modale
-    return df.to_dict("records"), False, ""
+    # Succès : on stocke le df + les infos playlist + on ferme la modale
+    return df.to_dict("records"), info, False, ""
+
+@app.callback(
+    Output("playlist-modal", "is_open", allow_duplicate=True),
+    Input("change-playlist", "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_playlist_modal_from_nav(n):
+    if n:
+        # On force l'ouverture de la fenêtre de choix de playlist
+        return True
+    return no_update
+
+
+@app.callback(
+    Output("playlist-summary", "children"),
+    Input("playlist-info", "data"),
+)
+def render_playlist_summary(info):
+    if not info:
+        return html.Span("Aucune playlist sélectionnée.",
+                         style={"color": "#777"})
+
+    name = info.get("name", "Playlist inconnue")
+    owner = info.get("owner", "Inconnu")
+    total = info.get("total", 0)
+    loaded = info.get("loaded_count", 0)
+    img = info.get("image", "")
+
+    parts = []
+
+    if img:
+        parts.append(
+            html.Img(
+                src=img,
+                style={
+                    "width": "32px",
+                    "height": "32px",
+                    "objectFit": "cover",
+                    "borderRadius": "4px",
+                    "marginRight": "8px",
+                    "verticalAlign": "middle",
+                },
+            )
+        )
+
+    parts.append(
+        html.Span(
+            f"Playlist : {name}",
+            style={"color": SPOTIFY_LIGHT, "fontWeight": "bold"},
+        )
+    )
+    parts.append(
+        html.Span(
+            f" • par {owner}",
+            style={"marginLeft": "4px"},
+        )
+    )
+    parts.append(
+        html.Span(
+            f" • {loaded} titres chargés (sur {total})",
+            style={"marginLeft": "4px", "color": "#9aa0a6"},
+        )
+    )
+
+    return html.Div(parts, style={"display": "flex", "alignItems": "center"})
 
 
 
