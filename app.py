@@ -250,7 +250,7 @@ def navbar():
     return dbc.Navbar(
         dbc.Container(
             [
-                dbc.NavbarBrand("Spotify Games", className="text-white"),
+                dbc.NavbarBrand("Spotify Games", className="text-white", href="/"),
                 dbc.Nav(
                     [
                         dbc.Button(
@@ -285,6 +285,100 @@ def navbar():
         style={"borderBottom": f"1px solid {SPOTIFY_GREEN}"},
     )
 
+# --------- PAGE ACCUEIL ----------
+def layout_home():
+    return html.Div(
+        [
+            html.H1(
+                "Spotify Games",
+                style={
+                    "color": SPOTIFY_LIGHT,
+                    "textAlign": "center",
+                    "marginBottom": "12px",
+                },
+            ),
+            html.P(
+                "Choisis un mode de jeu pour tester ta connaissance des hits Spotify.",
+                style={
+                    "color": "#b3b3b3",
+                    "textAlign": "center",
+                    "maxWidth": "700px",
+                    "margin": "0 auto 40px",
+                },
+            ),
+            html.Div(
+                [
+                    # Carte pour le mode Duel
+                    dcc.Link(
+                        dbc.Card(
+                            [
+                                dbc.CardImg(
+                                    src=app.get_asset_url("duel.png"),
+                                    top=True,
+                                    style={
+                                        "objectFit": "cover",
+                                        "height": "200px",
+                                    },
+                                ),
+                                dbc.CardBody(
+                                    html.H3(
+                                        "Jeu 1 : Duel",
+                                        className="card-title",
+                                        style={"textAlign": "center"},
+                                    )
+                                ),
+                            ],
+                            style={
+                                "width": "260px",
+                                "cursor": "pointer",
+                                "border": f"1px solid {SPOTIFY_GREEN}",
+                                "backgroundColor": "#121212",
+                            },
+                        ),
+                        href="/duel",
+                        style={"textDecoration": "none"},
+                    ),
+                    # Carte pour le mode Classement
+                    dcc.Link(
+                        dbc.Card(
+                            [
+                                dbc.CardImg(
+                                    src=app.get_asset_url("ranking.png"),
+                                    top=True,
+                                    style={
+                                        "objectFit": "cover",
+                                        "height": "200px",
+                                    },
+                                ),
+                                dbc.CardBody(
+                                    html.H3(
+                                        "Jeu 2 : Classement",
+                                        className="card-title",
+                                        style={"textAlign": "center"},
+                                    )
+                                ),
+                            ],
+                            style={
+                                "width": "260px",
+                                "cursor": "pointer",
+                                "border": f"1px solid {SPOTIFY_GREEN}",
+                                "backgroundColor": "#121212",
+                            },
+                        ),
+                        href="/ranking",
+                        style={"textDecoration": "none"},
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "justifyContent": "center",
+                    "gap": "32px",
+                    "flexWrap": "wrap",
+                },
+            ),
+        ],
+        style={"paddingTop": "40px", "paddingBottom": "40px"},
+    )
 
 # --------- PAGE DUEL ----------
 def layout_duel():
@@ -618,7 +712,7 @@ def layout_ranking():
     return html.Div(
         [
             html.H2(
-                "Classe le Top 10 par popularité (1 = le plus populaire)",
+                "Classe le Top 10 par popularité",
                 style={
                     "color": SPOTIFY_LIGHT,
                     "textAlign": "center",
@@ -634,15 +728,6 @@ def layout_ranking():
                 },
                 children=[
                     dbc.Button(
-                        "Recharger 10 titres",
-                        id="rank-reshuffle",
-                        style={
-                            "background": "#000",
-                            "border": f"1px solid {SPOTIFY_GREEN}",
-                            "color": SPOTIFY_LIGHT,
-                        },
-                    ),
-                    dbc.Button(
                         "Valider",
                         id="rank-validate",
                         color="success",
@@ -651,7 +736,7 @@ def layout_ranking():
                             "color": "#000",
                         },
                     ),
-                    # --- nouveau bouton "Nouvelle partie" (caché au début) ---
+                    # --- bouton "Nouvelle partie" (caché au début) ---
                     dbc.Button(
                         "Nouvelle partie",
                         id="rank-newgame",
@@ -669,13 +754,13 @@ def layout_ranking():
                 id="rank-list-container",
                 style={"maxWidth": "800px", "margin": "16px auto"},
             ),
-            # on ne s'en sert plus vraiment, mais on le garde pour compat
             html.Div(
                 id="rank-results",
                 style={"maxWidth": "1000px", "margin": "8px auto"},
             ),
         ]
     )
+
 
 
 # --------- Layout principal / Router ----------
@@ -702,7 +787,7 @@ app.layout = html.Div(
         # modale playlist
         dbc.Modal(
             id="playlist-modal",
-            is_open=True,
+            is_open=False,
             centered=True,
             backdrop="static",
             keyboard=False,
@@ -762,22 +847,27 @@ app.layout = html.Div(
 )
 
 # validation_layout pour que Dash connaisse tous les ids de toutes les pages
-app.validation_layout = html.Div(
-    [
-        app.layout,
-        layout_duel(),
-        layout_ranking(),
-    ]
-)
+app.validation_layout = html.Div([
+    app.layout,
+    layout_home(),
+    layout_duel(),
+    layout_ranking(),
+])
+
 
 # ======================
 #  Router
 # ======================
 @app.callback(Output("page-content", "children"), Input("url", "pathname"))
 def route(path):
+    if path == "/duel":
+        return layout_duel()
     if path == "/ranking":
         return layout_ranking()
-    return layout_duel()
+    # par défaut : page d'accueil
+    return layout_home()
+
+
 
 
 @app.callback(
@@ -791,8 +881,9 @@ def nav(n_duel, n_rank):
     if trig == "nav-ranking":
         return "/ranking"
     if trig == "nav-duel":
-        return "/"
+        return "/duel"
     return no_update
+
 
 
 # ======================
@@ -804,20 +895,43 @@ def nav(n_duel, n_rank):
     Output("modal-error", "children"),
     Input("load-playlist", "n_clicks"),
     Input("use-default", "n_clicks"),
+    Input("url", "pathname"),
     State("playlist-input", "value"),
-    prevent_initial_call=True,
+    State("df-store", "data"),
 )
-def load_playlist(n_load, n_default, raw_value):
+
+def load_playlist(n_load, n_default, path, raw_value, df_data):
     trig = ctx.triggered_id
+
+    # 1) Changement de page : ouvrir la modale uniquement sur les pages de jeu,
+    #    et seulement si aucune playlist n'est encore chargée.
+    if trig == "url":
+        if path in ("/duel", "/ranking") and not df_data:
+            # On arrive sur un mode de jeu sans playlist -> ouvrir la modale
+            return no_update, True, no_update
+        else:
+            # Sur la home, ou bien une playlist existe déjà -> modale fermée
+            return no_update, False, no_update
+
+    # 2) Clic sur "Utiliser Top 50 : France"
     if trig == "use-default":
         playlist_id = DEFAULT_PLAYLIST_ID
+
+    # 3) Clic sur "Charger" avec une valeur saisie
     elif trig == "load-playlist":
         playlist_id = parse_playlist_id(raw_value or "")
         if not playlist_id:
-            return no_update, True, "Veuillez entrer un ID ou une URL de playlist valide."
-    else:
-        return no_update, True, no_update
+            return (
+                no_update,
+                True,
+                "Veuillez entrer un ID ou une URL de playlist valide.",
+            )
 
+    # 4) Autre chose (ne devrait pas arriver)
+    else:
+        return no_update, no_update, no_update
+
+    # --- Chargement réel de la playlist ---
     try:
         token = get_token()
         tracks = get_tracks_from_playlist(token, playlist_id)
@@ -836,6 +950,7 @@ def load_playlist(n_load, n_default, raw_value):
             "Playlist vide/inaccessible ou contenant moins de 2 titres.",
         )
 
+    # Succès : on stocke le df + on ferme la modale
     return df.to_dict("records"), False, ""
 
 
@@ -843,10 +958,11 @@ def load_playlist(n_load, n_default, raw_value):
 #  Logique DUEL
 # ======================
 @app.callback(
-    Output("pair-store", "data"),
-    Output("selection-store", "data"),
+    Output("pair-store", "data", allow_duplicate=True),
+    Output("selection-store", "data", allow_duplicate=True),
     Output("score-store", "data"),
     Input("df-store", "data"),
+    prevent_initial_call=True,
 )
 def seed_round_on_df(records):
     if not records:
@@ -864,6 +980,27 @@ def seed_round_on_df(records):
         "best": 0,
         "last_round_key": None,
     }
+
+
+@app.callback(
+    Output("pair-store", "data", allow_duplicate=True),
+    Output("selection-store", "data", allow_duplicate=True),
+    Input("url", "pathname"),
+    State("df-store", "data"),
+    prevent_initial_call=True,
+)
+def reset_duel_on_nav(path, records):
+    # On ne fait quelque chose que si on arrive sur /duel
+    # et qu'une playlist est déjà chargée
+    if path != "/duel" or not records:
+        return no_update, no_update
+
+    df = pd.DataFrame(records)
+    pair = pick_two_ids_from_df(df)
+    # Nouvelle paire + aucune réponse sélectionnée
+    return pair, {"selected": None}
+
+
 
 
 @app.callback(
@@ -1090,12 +1227,14 @@ def render_scoreboard(store):
 @app.callback(
     Output("ranking-tracks", "data"),
     Input("url", "pathname"),
-    Input("rank-reshuffle", "n_clicks"),
     Input("rank-newgame", "n_clicks"),
-    State("df-store", "data"),
+    Input("df-store", "data"),
     prevent_initial_call=True,
 )
-def make_ranking_set(path, _n1, _n2, records):
+def make_ranking_set(path, _n_new, records):
+    # On ne fait quelque chose que si :
+    # - on est sur la page /ranking
+    # - une playlist est chargée
     if path != "/ranking" or not records:
         return no_update
 
@@ -1112,6 +1251,8 @@ def make_ranking_set(path, _n1, _n2, records):
     n = min(10, len(df_unique))
     sample = df_unique.head(n).to_dict("records")
     return sample
+
+
 
 
 @app.callback(
