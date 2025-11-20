@@ -56,6 +56,27 @@ def normalize_name(s: str) -> str:
     # tout en minuscules et uniquement alphanumérique
     return "".join(c.lower() for c in s if c.isalnum())
 
+# --- Cache global des popularités corrigées ---
+POPULARITY_CACHE_FILE = "popularity_cache.json"
+
+try:
+    with open(POPULARITY_CACHE_FILE, "r", encoding="utf-8") as f:
+        POPULARITY_CACHE: dict[str, int] = json.load(f)
+except FileNotFoundError:
+    POPULARITY_CACHE = {}
+except Exception:
+    # en cas de fichier corrompu, on repart d'un cache vide
+    POPULARITY_CACHE = {}
+
+
+def popularity_cache_key(track_name: str, artist_name: str) -> str:
+    """Clé de cache basée sur le nom normalisé du titre + artiste principal."""
+    t_norm = normalize_name(track_name)
+    a_norm = normalize_name(artist_name)
+    if not t_norm or not a_norm:
+        return ""
+    return f"{t_norm}||{a_norm}"
+
 
 
 def get_best_track_popularity(token: str, track_name: str, artist_name: str, market: str = "FR") -> int | None:
@@ -127,6 +148,33 @@ def get_best_track_popularity(token: str, track_name: str, artist_name: str, mar
         return None
 
 
+def get_cached_best_popularity(token: str, track_name: str, artist_name: str, market: str = "FR") -> int | None:
+    """
+    Version avec cache de get_best_track_popularity.
+    - si on a déjà calculé la meilleure popularité pour (titre, artiste) -> on la renvoie direct
+    - sinon on interroge l'API, on stocke en JSON + mémoire, puis on renvoie
+    """
+    key = popularity_cache_key(track_name, artist_name)
+    if not key:
+        return None
+
+    # 1) déjà en cache -> on renvoie directement
+    if key in POPULARITY_CACHE:
+        return POPULARITY_CACHE[key]
+
+    # 2) sinon on calcule via l'API
+    best = get_best_track_popularity(token, track_name, artist_name, market=market)
+    if best is not None:
+        POPULARITY_CACHE[key] = best
+        # on essaie de persister sur disque (si possible)
+        try:
+            with open(POPULARITY_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(POPULARITY_CACHE, f)
+        except Exception:
+            # en cas d'erreur d'écriture, ce n'est pas bloquant
+            pass
+
+    return best
 
 
 def build_df_from_tracks(tracks, token: str):
@@ -138,14 +186,15 @@ def build_df_from_tracks(tracks, token: str):
         images = track.get("album", {}).get("images", [])
         cover = images[0]["url"] if images else ""
 
-        # popularité fournie par la playlist (souvent bonne, parfois 0 ou bizarre)
         raw_pop = track.get("popularity", 0) or 0
-
         best_pop = raw_pop
+
         if main_artist != "Inconnu":
-            alt_pop = get_best_track_popularity(token, track["name"], main_artist)
-            if alt_pop is not None and alt_pop > best_pop:
-                best_pop = alt_pop
+            # 🔥 on passe par la version CACHÉE
+            alt_pop = get_cached_best_popularity(token, track["name"], main_artist)
+            if alt_pop is not None:
+                # on garde la meilleure des deux valeurs
+                best_pop = max(best_pop, alt_pop)
 
         rows.append(
             {
@@ -158,7 +207,10 @@ def build_df_from_tracks(tracks, token: str):
                 "popularity": best_pop,
             }
         )
+
     return pd.DataFrame(rows)
+
+
 
 
 
@@ -253,6 +305,17 @@ def navbar():
                 dbc.NavbarBrand("Spotify Games", className="text-white", href="/"),
                 dbc.Nav(
                     [
+                        dbc.Button(
+                            "Changer de playlist",
+                            id="change-playlist",
+                            color="dark",
+                            className="me-3",
+                            style={
+                                "border": f"1px solid {SPOTIFY_GREEN}",
+                                "background": "#000",
+                                "color": SPOTIFY_LIGHT,
+                            },
+                        ),
                         dbc.Button(
                             "Jeu 1 : Duel",
                             id="nav-duel",
@@ -415,33 +478,6 @@ def layout_duel():
                     "flexWrap": "wrap",
                 },
                 children=[
-                    html.Div(
-                        style={
-                            "backgroundColor": "#000",
-                            "border": f"1px solid {SPOTIFY_GREEN}",
-                            "borderRadius": "999px",
-                            "padding": "6px 14px",
-                            "color": SPOTIFY_LIGHT,
-                            "display": "flex",
-                            "gap": "8px",
-                            "alignItems": "baseline",
-                        },
-                        children=[
-                            html.Span(
-                                "Score",
-                                style={"color": "#B3B3B3", "fontSize": "13px"},
-                            ),
-                            html.Span(
-                                id="score-value",
-                                children="0",
-                                style={
-                                    "color": SPOTIFY_GREEN,
-                                    "fontWeight": "bold",
-                                    "fontSize": "18px",
-                                },
-                            ),
-                        ],
-                    ),
                     html.Div(
                         style={
                             "backgroundColor": "#000",
@@ -638,10 +674,6 @@ def layout_duel():
             html.Div(
                 style={"textAlign": "center", "marginTop": "8px"},
                 children=[
-                    html.H4(
-                        id="result-message",
-                        style={"color": SPOTIFY_LIGHT, "minHeight": "1.5em"},
-                    ),
                     dbc.Button(
                         "Nouvelle manche",
                         id="next-round",
@@ -842,30 +874,52 @@ app.layout = html.Div(
                 "maxWidth": "min(1100px, 95vw)",
                 "margin": "0 auto",
             },
+            children=[
+                # 3 pages toujours présentes, on joue juste sur display
+                html.Div(id="page-home", children=layout_home()),
+                html.Div(
+                    id="page-duel",
+                    children=layout_duel(),
+                    style={"display": "none"},
+                ),
+                html.Div(
+                    id="page-ranking",
+                    children=layout_ranking(),
+                    style={"display": "none"},
+                ),
+            ],
         ),
     ],
 )
 
-# validation_layout pour que Dash connaisse tous les ids de toutes les pages
-app.validation_layout = html.Div([
-    app.layout,
-    layout_home(),
-    layout_duel(),
-    layout_ranking(),
-])
+
 
 
 # ======================
 #  Router
 # ======================
-@app.callback(Output("page-content", "children"), Input("url", "pathname"))
+@app.callback(
+    Output("page-home", "style"),
+    Output("page-duel", "style"),
+    Output("page-ranking", "style"),
+    Input("url", "pathname"),
+)
 def route(path):
+    # Par défaut : tout caché
+    home_style = {"display": "none"}
+    duel_style = {"display": "none"}
+    ranking_style = {"display": "none"}
+
     if path == "/duel":
-        return layout_duel()
-    if path == "/ranking":
-        return layout_ranking()
-    # par défaut : page d'accueil
-    return layout_home()
+        duel_style["display"] = "block"
+    elif path == "/ranking":
+        ranking_style["display"] = "block"
+    else:
+        # page d'accueil par défaut
+        home_style["display"] = "block"
+
+    return home_style, duel_style, ranking_style
+
 
 
 
@@ -889,35 +943,41 @@ def nav(n_duel, n_rank):
 # ======================
 #  Playlist loading
 # ======================
+
 @app.callback(
     Output("df-store", "data"),
     Output("playlist-modal", "is_open"),
     Output("modal-error", "children"),
     Input("load-playlist", "n_clicks"),
     Input("use-default", "n_clicks"),
+    Input("change-playlist", "n_clicks"),
     Input("url", "pathname"),
     State("playlist-input", "value"),
     State("df-store", "data"),
 )
-
-def load_playlist(n_load, n_default, path, raw_value, df_data):
+def load_playlist(n_load, n_default, n_change, path, raw_value, df_data):
     trig = ctx.triggered_id
 
-    # 1) Changement de page : ouvrir la modale uniquement sur les pages de jeu,
-    #    et seulement si aucune playlist n'est encore chargée.
+    # 1) Changement de page : ouvrir la modale sur les pages de jeu
+    #    uniquement si aucune playlist n'est encore chargée.
     if trig == "url":
         if path in ("/duel", "/ranking") and not df_data:
-            # On arrive sur un mode de jeu sans playlist -> ouvrir la modale
             return no_update, True, no_update
         else:
-            # Sur la home, ou bien une playlist existe déjà -> modale fermée
             return no_update, False, no_update
 
-    # 2) Clic sur "Utiliser Top 50 : France"
+    # 2) Clic sur "Changer de playlist" dans la barre de nav :
+    #    on ouvre juste la modale, sans toucher au df-store.
+    if trig == "change-playlist":
+        # Optionnel : vider le champ et le message d'erreur
+        # return no_update, True, ""
+        return no_update, True, no_update
+
+    # 3) Clic sur "Utiliser Top 50 : France"
     if trig == "use-default":
         playlist_id = DEFAULT_PLAYLIST_ID
 
-    # 3) Clic sur "Charger" avec une valeur saisie
+    # 4) Clic sur "Charger" avec une valeur saisie
     elif trig == "load-playlist":
         playlist_id = parse_playlist_id(raw_value or "")
         if not playlist_id:
@@ -927,7 +987,7 @@ def load_playlist(n_load, n_default, path, raw_value, df_data):
                 "Veuillez entrer un ID ou une URL de playlist valide.",
             )
 
-    # 4) Autre chose (ne devrait pas arriver)
+    # 5) Autre chose (ne devrait pas arriver)
     else:
         return no_update, no_update, no_update
 
@@ -952,6 +1012,7 @@ def load_playlist(n_load, n_default, path, raw_value, df_data):
 
     # Succès : on stocke le df + on ferme la modale
     return df.to_dict("records"), False, ""
+
 
 
 # ======================
@@ -985,20 +1046,39 @@ def seed_round_on_df(records):
 @app.callback(
     Output("pair-store", "data", allow_duplicate=True),
     Output("selection-store", "data", allow_duplicate=True),
+    Output("score-store", "data", allow_duplicate=True),
     Input("url", "pathname"),
     State("df-store", "data"),
+    State("score-store", "data"),
     prevent_initial_call=True,
 )
-def reset_duel_on_nav(path, records):
+def reset_duel_on_nav(path, records, score_state):
     # On ne fait quelque chose que si on arrive sur /duel
     # et qu'une playlist est déjà chargée
     if path != "/duel" or not records:
-        return no_update, no_update
+        return no_update, no_update, no_update
 
     df = pd.DataFrame(records)
     pair = pick_two_ids_from_df(df)
-    # Nouvelle paire + aucune réponse sélectionnée
-    return pair, {"selected": None}
+
+    # Si pas encore de state, on repart de zéro
+    if not score_state:
+        score_state = {
+            "score": 0,
+            "streak": 0,
+            "best": 0,
+            "last_round_key": None,
+        }
+    else:
+        # On remet seulement la streak à 0,
+        # on garde le best et le score si tu veux les exploiter plus tard
+        score_state = score_state.copy()
+        score_state["streak"] = 0
+        score_state["last_round_key"] = None  # pour une nouvelle manche propre
+
+    # Nouvelle paire + aucune réponse + streak reset
+    return pair, {"selected": None}, score_state
+
 
 
 
@@ -1051,7 +1131,6 @@ def choose_or_reset(n_left, n_right, n_next, selection_state):
         Output("right-artist", "children"),
         Output("right-feat", "children"),
         Output("right-release", "children"),
-        Output("result-message", "children"),
         Output("left-overlay", "children"),
         Output("right-overlay", "children"),
         Output("left-overlay", "style"),
@@ -1061,6 +1140,7 @@ def choose_or_reset(n_left, n_right, n_next, selection_state):
     Input("selection-store", "data"),
     State("df-store", "data"),
 )
+
 def render_duel(pair_data, selection_state, records):
     empty = (
         "",
@@ -1075,9 +1155,8 @@ def render_duel(pair_data, selection_state, records):
         "",
         "",
         "",
-        "",
-        "",
-        "",
+        "",      # left-overlay children
+        "",      # right-overlay children
         overlay_style(False),
         overlay_style(False),
     )
@@ -1104,10 +1183,10 @@ def render_duel(pair_data, selection_state, records):
     right_release = f"Date de sortie : {right['release_date']}"
 
     left_style, right_style = base_img_style(), base_img_style()
-    message = ""
     ltxt = rtxt = ""
     lostyle = overlay_style(False)
     rostyle = overlay_style(False)
+
 
     sel = (selection_state or {}).get("selected")
     if sel in ("left", "right"):
@@ -1118,7 +1197,6 @@ def render_duel(pair_data, selection_state, records):
         if lp == rp:
             left_style = add_border(left_style, SPOTIFY_GREEN)
             right_style = add_border(right_style, SPOTIFY_GREEN)
-            message = f"Égalité parfaite ! Les deux morceaux ont {lp}/100."
         else:
             correct_side = "left" if lp > rp else "right"
             if sel == correct_side:
@@ -1126,7 +1204,6 @@ def render_duel(pair_data, selection_state, records):
                     left_style = add_border(left_style, SPOTIFY_GREEN)
                 else:
                     right_style = add_border(right_style, SPOTIFY_GREEN)
-                message = "✅ Bonne réponse !"
             else:
                 if sel == "left":
                     left_style = add_border(left_style, RED_BAD)
@@ -1134,10 +1211,7 @@ def render_duel(pair_data, selection_state, records):
                 else:
                     right_style = add_border(right_style, RED_BAD)
                     left_style = add_border(left_style, SPOTIFY_GREEN)
-                message = (
-                    f"❌ Mauvaise réponse. "
-                    f"« {right_title if correct_side=='right' else left_title} » est plus populaire."
-                )
+                
 
     return (
         left_src,
@@ -1152,7 +1226,6 @@ def render_duel(pair_data, selection_state, records):
         right_artist,
         right_feat,
         right_release,
-        message,
         ltxt,
         rtxt,
         lostyle,
@@ -1208,17 +1281,16 @@ def update_score(selection_state, pair_data, score_state, records):
 
 
 @app.callback(
-    Output("score-value", "children"),
     Output("streak-value", "children"),
     Output("best-value", "children"),
     Input("score-store", "data"),
 )
 def render_scoreboard(store):
     return (
-        str(store.get("score", 0)),
         str(store.get("streak", 0)),
         str(store.get("best", 0)),
     )
+
 
 
 # ======================
