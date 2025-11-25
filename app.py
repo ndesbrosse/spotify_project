@@ -8,6 +8,12 @@ import dash
 from dash import Dash, dcc, html, Input, Output, State, ctx, no_update
 import dash_bootstrap_components as dbc
 
+import string, random, threading
+import time
+
+from dash.dependencies import ClientsideFunction
+
+
 pd.set_option("display.max_rows", None)
 load_dotenv()
 
@@ -17,6 +23,36 @@ load_dotenv()
 client_id = os.getenv("CLIENT_ID")
 client_secret = os.getenv("CLIENT_SECRET")
 DEFAULT_PLAYLIST_ID = "2IgPkhcHbgQ4s4PdCxljAx"  # Top 50 : France
+
+# ======================
+#  Stockage des parties multi (DEV)
+# ======================
+GAMES = {}  # code -> dict de partie
+GAMES_LOCK = threading.Lock()
+
+
+def generate_game_code(length: int = 6) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(random.choice(alphabet) for _ in range(length))
+
+def generate_player_id(length: int = 12) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(random.choice(alphabet) for _ in range(length))
+
+
+
+def create_game(code: str, tracks_records: list[dict]) -> dict:
+    """
+    tracks_records = df.to_dict('records') de la playlist sélectionnée.
+    """
+    return {
+        "code": code,
+        "tracks": tracks_records,   # toute la playlist
+        "round_tracks": None,       # 10 titres pour la manche en cours
+        "round_started_at": None,   # timestamp du début de la manche
+        "answers": {},              # player_id -> {"order_ids": [...], "ok": int, "m": int}
+    }
+
 
 
 def get_token():
@@ -376,6 +412,16 @@ def navbar():
                         dbc.Button(
                             "Jeu 2 : Classement",
                             id="nav-ranking",
+                            color="dark",
+                            style={
+                                "border": f"1px solid {SPOTIFY_GREEN}",
+                                "background": "#000",
+                                "color": SPOTIFY_LIGHT,
+                            },
+                        ),
+                        dbc.Button(
+                            "Classement (Multi 1v1)",
+                            id="nav-ranking-multi",
                             color="dark",
                             style={
                                 "border": f"1px solid {SPOTIFY_GREEN}",
@@ -847,6 +893,137 @@ def layout_ranking():
     )
 
 
+def layout_ranking_multi():
+    return html.Div(
+        [
+            html.H2(
+                "Classement multi 1v1",
+                style={
+                    "color": SPOTIFY_LIGHT,
+                    "textAlign": "center",
+                    "marginBottom": "12px",
+                },
+            ),
+
+            # Zone création / join
+            html.Div(
+                [
+                    html.H4(
+                        "Créer ou rejoindre une partie",
+                        style={"color": SPOTIFY_LIGHT, "textAlign": "center"},
+                    ),
+                    html.Div(
+                        [
+                            dbc.Button(
+                                "Créer une partie",
+                                id="mp-create-game",
+                                style={
+                                    "background": "#000",
+                                    "border": f"1px solid {SPOTIFY_GREEN}",
+                                    "color": SPOTIFY_LIGHT,
+                                    "marginRight": "8px",
+                                },
+                            ),
+                            dbc.Input(
+                                id="mp-code-input",
+                                placeholder="Code de partie (ex: ABC123)",
+                                type="text",
+                                style={"maxWidth": "180px"},
+                            ),
+                            dbc.Button(
+                                "Rejoindre",
+                                id="mp-join-game",
+                                style={
+                                    "background": "#000",
+                                    "border": f"1px solid {SPOTIFY_GREEN}",
+                                    "color": SPOTIFY_LIGHT,
+                                    "marginLeft": "8px",
+                                },
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "justifyContent": "center",
+                            "alignItems": "center",
+                            "gap": "6px",
+                            "flexWrap": "wrap",
+                            "marginTop": "8px",
+                        },
+                    ),
+                    html.Small(
+                        id="mp-status-text",
+                        style={
+                            "color": "#b3b3b3",
+                            "display": "block",
+                            "marginTop": "8px",
+                            "textAlign": "center",
+                        },
+                    ),
+                    html.Div(
+                        id="mp-game-info",
+                        style={
+                            "color": SPOTIFY_GREEN,
+                            "textAlign": "center",
+                            "marginTop": "4px",
+                            "fontWeight": "bold",
+                        },
+                    ),
+                ],
+                style={"marginBottom": "16px"},
+            ),
+
+            dcc.Interval(id="mp-interval", interval=2000, n_intervals=0),
+
+            # Zone de jeu
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            dbc.Button(
+                                "Lancer / relancer la manche",
+                                id="mp-start-round",
+                                style={
+                                    "backgroundColor": SPOTIFY_GREEN,
+                                    "color": "#000",
+                                    "fontWeight": "bold",
+                                },
+                            ),
+                            dbc.Button(
+                                "Valider mon classement",
+                                id="mp-rank-validate",
+                                style={
+                                    "background": "#000",
+                                    "border": f"1px solid {SPOTIFY_GREEN}",
+                                    "color": SPOTIFY_LIGHT,
+                                    "marginLeft": "10px",
+                                },
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "justifyContent": "center",
+                            "gap": "8px",
+                            "flexWrap": "wrap",
+                            "marginBottom": "8px",
+                        },
+                    ),
+                    html.Div(
+                        id="mp-rank-list-container",
+                        style={
+                            "width": "100%",
+                            "maxWidth": "1200px",   # avant : 800px
+                            "margin": "16px auto",
+                        },
+                    ),
+                    html.Div(
+                        id="mp-round-results",
+                        style={"maxWidth": "1000px", "margin": "8px auto"},
+                    ),
+                ]
+            ),
+        ]
+    )
+
 
 # --------- Layout principal / Router ----------
 app.layout = html.Div(
@@ -870,6 +1047,13 @@ app.layout = html.Div(
         dcc.Store(id="ranking-tracks", data=None),
         dcc.Store(id="rank-order", data=[]),
         dcc.Store(id="rank-init", data=None),
+        dcc.Store(id="mp-game-code", data=None),            # code de partie multi courant
+        dcc.Store(id="mp-player-id", data=None),            # identifiant joueur multi
+        dcc.Store(id="mp-rank-order", data=None),           # ordre envoyé quand on clique "Valider"
+        dcc.Store(id="mp-rank-order-snapshot", data=None),  # dernier ordre observé dans la liste
+        dcc.Store(id="mp-dnd-init", data=None),             # juste pour initialiser le drag&drop multi
+        dcc.Store(id="mp-validated", data=False),  # le joueur a cliqué sur "Valider" ?
+
         # modale playlist
         dbc.Modal(
             id="playlist-modal",
@@ -934,7 +1118,7 @@ app.layout = html.Div(
                 "minHeight": "100vh",
                 "padding": "24px",
                 "width": "100%",
-                "maxWidth": "min(1100px, 95vw)",
+                "maxWidth": "min(1400px, 98vw)",  # avant : 1100px, 95vw
                 "margin": "0 auto",
             },
             children=[
@@ -948,6 +1132,11 @@ app.layout = html.Div(
                 html.Div(
                     id="page-ranking",
                     children=layout_ranking(),
+                    style={"display": "none"},
+                ),
+                html.Div(
+                    id="page-ranking-multi",
+                    children=layout_ranking_multi(),
                     style={"display": "none"},
                 ),
             ],
@@ -965,25 +1154,27 @@ app.layout = html.Div(
     Output("page-home", "style"),
     Output("page-duel", "style"),
     Output("page-ranking", "style"),
+    Output("page-ranking-multi", "style"),
     Input("url", "pathname"),
 )
 def route(path):
-    # Par défaut : tout caché
+    # Tout caché par défaut
     home_style = {"display": "none"}
     duel_style = {"display": "none"}
     ranking_style = {"display": "none"}
+    ranking_multi_style = {"display": "none"}
 
     if path == "/duel":
         duel_style["display"] = "block"
     elif path == "/ranking":
         ranking_style["display"] = "block"
+    elif path == "/ranking-multi":
+        ranking_multi_style["display"] = "block"
     else:
         # page d'accueil par défaut
         home_style["display"] = "block"
 
-    return home_style, duel_style, ranking_style
-
-
+    return home_style, duel_style, ranking_style, ranking_multi_style
 
 
 
@@ -991,15 +1182,19 @@ def route(path):
     Output("url", "pathname", allow_duplicate=True),
     Input("nav-duel", "n_clicks"),
     Input("nav-ranking", "n_clicks"),
+    Input("nav-ranking-multi", "n_clicks"),
     prevent_initial_call=True,
 )
-def nav(n_duel, n_rank):
+def nav(n_duel, n_rank, n_rank_multi):
     trig = ctx.triggered_id
+    if trig == "nav-ranking-multi":
+        return "/ranking-multi"
     if trig == "nav-ranking":
         return "/ranking"
     if trig == "nav-duel":
         return "/duel"
     return no_update
+
 
 
 
@@ -1024,7 +1219,7 @@ def load_playlist(n_load, n_default, path, raw_value, df_data):
     # 1) Changement de page : ouvrir la modale uniquement sur les pages de jeu,
     #    et seulement si aucune playlist n'est encore chargée.
     if trig == "url":
-        if path in ("/duel", "/ranking") and not df_data:
+        if path in ("/duel", "/ranking", "/ranking-multi") and not df_data:
             # On arrive sur un mode de jeu sans playlist -> ouvrir la modale
             return no_update, no_update, True, no_update
         else:
@@ -1486,6 +1681,280 @@ def render_rank_list(tracks):
     )
     return [hint, ul]
 
+@app.callback(
+    Output("mp-rank-list-container", "children"),
+    Input("mp-interval", "n_intervals"),
+    State("mp-game-code", "data"),
+    State("mp-player-id", "data"),
+    State("mp-validated", "data"),
+    State("mp-rank-order-snapshot", "data"),
+)
+def render_mp_rank_list(_n, code, player_id, validated, snapshot_order):
+    if not code:
+        return html.Div(
+            "Crée ou rejoins une partie pour voir les titres.",
+            style={"color": "#aaa", "textAlign": "center"},
+        )
+
+    with GAMES_LOCK:
+        game = GAMES.get(code)
+        if not game:
+            return html.Div(
+                "Partie introuvable (le créateur a peut-être quitté).",
+                style={"color": "#aaa", "textAlign": "center"},
+            )
+
+        round_tracks = game.get("round_tracks")
+        started_at = game.get("round_started_at")
+        answers = game.get("answers") or {}
+
+    # Manche pas encore lancée ou pas de titres
+    if not round_tracks or not started_at:
+        return html.Div(
+            "En attente que quelqu’un lance la manche.",
+            style={"color": "#aaa", "textAlign": "center"},
+        )
+
+    # Chrono & condition d'affichage des résultats
+    now = time.time()
+    elapsed = now - started_at
+    remaining = max(0, 60 - int(elapsed))
+    results_ready = (elapsed >= 60) or (len(answers) >= 2)
+
+    # ========= AVANT LES RÉSULTATS =========
+    if not results_ready:
+        # Si le joueur a déjà cliqué sur "Valider" -> on masque la liste
+        if validated:
+            return html.Div(
+                f"Classement envoyé, en attente de ton adversaire… (temps restant : {remaining}s)",
+                style={"color": "#b3b3b3", "textAlign": "center", "marginTop": "8px"},
+            )
+
+        # Sinon on affiche la liste + timer + hint
+        items = [_track_li(t, i) for i, t in enumerate(round_tracks)]
+        ul = html.Ul(
+            items,
+            id="mp-rank-list",
+            style={
+                "padding": 0,
+                "margin": "8px auto",
+                "display": "flex",
+                "flexDirection": "column",
+                "gap": "10px",
+            },
+        )
+        timer_div = html.Div(
+            f"Temps restant : {remaining}s",
+            style={
+                "textAlign": "center",
+                "color": SPOTIFY_LIGHT,
+                "marginBottom": "4px",
+                "fontWeight": "bold",
+            },
+        )
+        hint = html.Div(
+            "Fais glisser les lignes pour les réordonner, puis clique sur Valider.",
+            style={"textAlign": "center", "color": "#9aa0a6", "marginBottom": "8px"},
+        )
+        return [timer_div, hint, ul]
+
+    # ========= RÉSULTATS (la liste disparaît) =========
+    df = pd.DataFrame(round_tracks)
+    truth = df.sort_values("popularity", ascending=False).reset_index(drop=True)
+    truth_ids = list(truth["id"])
+    by_id = {t["id"]: t for t in round_tracks}
+
+    # ---- Colonne centrale : classement correct ----
+    truth_items = []
+    for _, row in truth.iterrows():
+        truth_items.append(
+            html.Li(
+                [
+                    html.Img(
+                        src=row["cover"],
+                        style={
+                            "width": "34px",
+                            "height": "34px",
+                            "objectFit": "cover",
+                            "borderRadius": "6px",
+                            "marginRight": "10px",
+                        },
+                    ),
+                    html.Span(
+                        row["track"],
+                        style={"color": SPOTIFY_LIGHT, "fontWeight": 600},
+                    ),
+                    html.Span(
+                        "  —  " + row["artist"],
+                        style={
+                            "color": "#9aa0a6",
+                            "fontSize": "12px",
+                            "marginLeft": "6px",
+                        },
+                    ),
+                    html.Span(
+                        f"  ({int(row['popularity'])})",
+                        style={"color": "#70757a", "marginLeft": "auto"},
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "6px",
+                    "listStyle": "none",
+                    "border": "1px solid #2a2a2a",
+                    "borderRadius": "10px",
+                    "padding": "8px 10px",
+                    "background": "#111",
+                    "marginBottom": "8px",
+                },
+            )
+        )
+
+    center_col = html.Div(
+        [
+            html.H4("Classement correct", style={"color": SPOTIFY_LIGHT}),
+            html.Ul(truth_items, style={"padding": 0}),
+        ],
+        style={"flex": "1", "minWidth": "260px"},
+    )
+
+    # ---- Helper pour construire une colonne joueur ----
+    def build_user_col(order_ids, title_prefix):
+        if not order_ids:
+            return html.Div(
+                [
+                    html.H4(title_prefix, style={"color": SPOTIFY_LIGHT}),
+                    html.P(
+                        "Aucun classement disponible pour ce joueur.",
+                        style={"color": "#b3b3b3"},
+                    ),
+                ],
+                style={"flex": "1", "minWidth": "260px"},
+            )
+
+        user = [by_id[i] for i in order_ids if i in by_id]
+        m = min(len(truth_ids), len(user))
+        user = user[:m]
+
+        ok = 0
+        lis = []
+        for idx, t in enumerate(user):
+            correct_id = truth_ids[idx]
+            good = t["id"] == correct_id
+            if good:
+                ok += 1
+            lis.append(
+                html.Li(
+                    [
+                        html.Img(
+                            src=t["cover"],
+                            style={
+                                "width": "34px",
+                                "height": "34px",
+                                "objectFit": "cover",
+                                "borderRadius": "6px",
+                                "marginRight": "10px",
+                            },
+                        ),
+                        html.Span(
+                            t["track"],
+                            style={"color": SPOTIFY_LIGHT, "fontWeight": 600},
+                        ),
+                        html.Span(
+                            "  —  " + t["artist"],
+                            style={
+                                "color": "#9aa0a6",
+                                "fontSize": "12px",
+                                "marginLeft": "6px",
+                            },
+                        ),
+                        html.Span(
+                            f"({int(t['popularity'])})",
+                            style={"color": "#70757a", "marginLeft": "auto"},
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "gap": "6px",
+                        "listStyle": "none",
+                        "border": "2px solid " + ("#2ecc71" if good else "#e74c3c"),
+                        "borderRadius": "10px",
+                        "padding": "8px 10px",
+                        "background": "#0f1a12" if good else "#1b0f10",
+                        "marginBottom": "8px",
+                    },
+                )
+            )
+
+        return html.Div(
+            [
+                html.H4(
+                    f"{title_prefix} — {ok}/{m} bien placés",
+                    style={"color": SPOTIFY_LIGHT},
+                ),
+                html.Ul(lis, style={"padding": 0}),
+            ],
+            style={"flex": "1", "minWidth": "260px"},
+        )
+
+    # ---- Ordre du joueur courant (gauche) ----
+    order_me = None
+    ans_me = answers.get(player_id) if player_id else None
+
+    if ans_me and ans_me.get("order_ids"):
+        order_me = ans_me["order_ids"]
+    elif snapshot_order:
+        # le joueur n'a pas validé mais on a le snapshot local
+        order_me = snapshot_order
+    else:
+        # fallback : ordre initial des titres
+        order_me = [t["id"] for t in round_tracks]
+
+    left_col = build_user_col(order_me, "Ton classement")
+
+    # ---- Ordre de l'adversaire (droite) ----
+    opponent_order = None
+    if answers and player_id:
+        opponent_id = None
+        for pid in answers.keys():
+            if pid != player_id:
+                opponent_id = pid
+                break
+        if opponent_id:
+            opponent_order = answers[opponent_id].get("order_ids")
+
+    right_col = build_user_col(opponent_order, "Classement de ton adversaire")
+
+    header = html.Div(
+        "Résultats de la manche",
+        style={
+            "textAlign": "center",
+            "color": SPOTIFY_LIGHT,
+            "fontWeight": "bold",
+            "marginBottom": "10px",
+        },
+    )
+    return html.Div(
+        [
+            header,
+            html.Div(
+                [left_col, center_col, right_col],
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "repeat(3, minmax(0, 1fr))",
+                    "gap": "24px",  # ou 32px
+                    "alignItems": "flex-start",
+                },
+            ),
+        ]
+    )
+
+
+
+
+
 
 # Quand on génère une nouvelle liste de titres, on remet les boutons
 # en mode "jeu" (Valider visible, Nouvelle partie caché).
@@ -1505,94 +1974,145 @@ def reset_ranking_buttons(tracks, new_style, val_style):
     return new_style, val_style
 
 
-# --- (A) INIT drag&drop : on attend que le DOM ait créé #rank-list ---
+# ======================
+#  Multi ranking : lobby (création / join)
+# ======================
+@app.callback(
+    Output("mp-game-code", "data"),
+    Output("mp-player-id", "data"),
+    Output("mp-status-text", "children", allow_duplicate=True),
+    Input("mp-create-game", "n_clicks"),
+    Input("mp-join-game", "n_clicks"),
+    State("df-store", "data"),
+    State("mp-code-input", "value"),
+    State("mp-player-id", "data"),
+    prevent_initial_call=True,
+)
+
+def handle_multi_lobby(n_create, n_join, df_data, code_input, player_id_current):
+    trig = ctx.triggered_id
+
+    # On garde un player_id par onglet/fenêtre
+    player_id = player_id_current or generate_player_id()
+
+    # Création de partie : on utilise la playlist du df-store
+    if trig == "mp-create-game":
+        if not df_data:
+            return no_update, no_update, "Charge d'abord une playlist (bouton 'Changer de playlist' en haut)."
+
+        code = generate_game_code()
+        with GAMES_LOCK:
+            while code in GAMES:
+                code = generate_game_code()
+            GAMES[code] = create_game(code, df_data)
+
+        return code, player_id, f"Partie créée ! Code à partager : {code}"
+
+    # Rejoindre une partie existante
+    if trig == "mp-join-game":
+        code = (code_input or "").strip().upper()
+        if not code:
+            return no_update, no_update, "Entre un code de partie."
+        with GAMES_LOCK:
+            if code not in GAMES:
+                return no_update, no_update, "Partie introuvable. Vérifie le code."
+        return code, player_id, f"Tu as rejoint la partie {code}."
+
+    return no_update, no_update, no_update
+
+
+
+@app.callback(
+    Output("mp-game-info", "children"),
+    Input("mp-game-code", "data"),
+)
+def show_mp_game_info(code):
+    if not code:
+        return "Aucune partie en cours."
+    return f"Partie en cours : {code}"
+
+@app.callback(
+    Output("mp-status-text", "children", allow_duplicate=True),
+    Input("mp-start-round", "n_clicks"),
+    State("mp-game-code", "data"),
+    prevent_initial_call=True,
+)
+def mp_start_round(n_start, code):
+    if not n_start:
+        return no_update
+    if not code:
+        return "Crée ou rejoins d'abord une partie."
+
+    with GAMES_LOCK:
+        game = GAMES.get(code)
+        if not game:
+            return "Partie introuvable (le créateur a peut-être quitté)."
+
+        df = pd.DataFrame(game["tracks"])
+        if df.empty:
+            return "Cette partie n'a pas de titres associés."
+
+        df_unique = df.sample(frac=1).drop_duplicates(subset="popularity")
+        if len(df_unique) < 2:
+            return "Pas assez de titres avec des popularités distinctes."
+
+        n = min(10, len(df_unique))
+        game["round_tracks"] = df_unique.head(n).to_dict("records")
+
+        # 🔥 reset chrono + réponses
+        game["round_started_at"] = time.time()
+        game["answers"] = {}
+
+    return "Manche lancée ! Classe les 10 titres puis clique sur Valider."
+
+
+
+# === CLIENTSIDE CALLBACKS : DRAG & DROP ===
+
+# Classement solo : initialisation du drag & drop
 app.clientside_callback(
-    """
-    function(pathname, tracks){
-        try {
-            if (pathname !== '/ranking') {
-                return window.dash_clientside.no_update;
-            }
-
-            function attachDnD(){
-                var list = document.getElementById('rank-list');
-                if (!list) {
-                    // réessaye tant que la liste n’existe pas encore
-                    window.setTimeout(attachDnD, 100);
-                    return;
-                }
-                if (list.__dnd_inited) {
-                    return;
-                }
-                list.__dnd_inited = true;
-
-                var dragEl = null;
-
-                list.addEventListener('dragstart', function(e){
-                    var li = e.target.closest('li');
-                    if(!li) return;
-                    dragEl = li;
-                    e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/plain', li.getAttribute('data-id'));
-                    li.style.opacity = '0.4';
-                });
-
-                list.addEventListener('dragend', function(e){
-                    if(dragEl){ dragEl.style.opacity = ''; }
-                    dragEl = null;
-                });
-
-                list.addEventListener('dragover', function(e){
-                    e.preventDefault();
-                    var over = e.target.closest('li');
-                    if(!over || over === dragEl) return;
-                    var rect = over.getBoundingClientRect();
-                    var next = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5;
-                    list.insertBefore(dragEl, next ? over.nextSibling : over);
-                });
-
-                list.addEventListener('drop', function(e){ e.preventDefault(); });
-            }
-
-            // lance l’attachement après un petit délai pour laisser React finir le rendu
-            window.setTimeout(attachDnD, 0);
-            return Date.now();
-        } catch (err) {
-            console.warn('Init DnD error:', err);
-            return window.dash_clientside.no_update;
-        }
-    }
-    """,
+    ClientsideFunction(namespace="ranking", function_name="init_dnd"),
     Output("rank-init", "data"),
     Input("url", "pathname"),
     Input("ranking-tracks", "data"),
     prevent_initial_call=True,
 )
 
-# --- (B) Lecture de l’ordre au clic "Valider" ---
+# Classement solo : lecture de l'ordre au clic sur "Valider"
 app.clientside_callback(
-    """
-    function(n_clicks){
-        try {
-            if (!n_clicks) return window.dash_clientside.no_update;
-            var list = document.getElementById('rank-list');
-            if(!list) return window.dash_clientside.no_update;
-            var order = [];
-            for (var i=0;i<list.children.length;i++){
-                var id = list.children[i].getAttribute('data-id');
-                if(id) order.push(id);
-            }
-            return order;
-        } catch (err) {
-            console.warn('Read order error:', err);
-            return window.dash_clientside.no_update;
-        }
-    }
-    """,
+    ClientsideFunction(namespace="ranking", function_name="read_order"),
     Output("rank-order", "data"),
     Input("rank-validate", "n_clicks"),
     prevent_initial_call=True,
 )
+
+# Multi : initialisation du drag & drop
+app.clientside_callback(
+    ClientsideFunction(namespace="rankingMulti", function_name="init_dnd"),
+    Output("mp-dnd-init", "data"),
+    Input("url", "pathname"),
+    Input("mp-game-code", "data"),
+    prevent_initial_call=True,
+)
+
+# Multi : lecture de l'ordre au clic sur "Valider mon classement"
+app.clientside_callback(
+    ClientsideFunction(namespace="rankingMulti", function_name="read_order"),
+    Output("mp-rank-order", "data"),
+    Input("mp-rank-validate", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+# Multi : snapshot de l'ordre toutes les 2s (pour le cas où le joueur ne clique pas sur Valider)
+app.clientside_callback(
+    ClientsideFunction(namespace="rankingMulti", function_name="snapshot_order"),
+    Output("mp-rank-order-snapshot", "data"),
+    Input("mp-interval", "n_intervals"),
+    prevent_initial_call=True,
+)
+
+
+
 
 
 # === Validation du classement ===
@@ -1757,6 +2277,46 @@ def validate_ranking(order_ids, tracks, new_style, val_style):
     val_style["display"] = "none"
 
     return results_div, new_style, val_style
+
+@app.callback(
+    Output("mp-status-text", "children", allow_duplicate=True),
+    Input("mp-rank-order", "data"),
+    State("mp-game-code", "data"),
+    State("mp-player-id", "data"),
+    prevent_initial_call=True,
+)
+def submit_mp_ranking(order_ids, code, player_id):
+    if not order_ids or not code or not player_id:
+        return "Aucune liste à valider."
+
+    with GAMES_LOCK:
+        game = GAMES.get(code)
+        if not game or not game.get("round_tracks"):
+            return "Partie ou manche introuvable."
+
+        round_tracks = game["round_tracks"]
+        df = pd.DataFrame(round_tracks)
+        truth = df.sort_values("popularity", ascending=False).reset_index(drop=True)
+        truth_ids = list(truth["id"])
+        by_id = {t["id"]: t for t in round_tracks}
+
+        user = [by_id[i] for i in order_ids if i in by_id]
+        m = min(len(truth_ids), len(user))
+        ok = 0
+        for idx in range(m):
+            if user[idx]["id"] == truth_ids[idx]:
+                ok += 1
+
+        answers = game.setdefault("answers", {})
+        answers[player_id] = {
+            "order_ids": order_ids,
+            "ok": ok,
+            "m": m,
+        }
+
+    return "Classement reçu ✅ En attente de la réponse de ton adversaire ou de la fin du chrono (60s)…"
+
+
 
 
 if __name__ == "__main__":
